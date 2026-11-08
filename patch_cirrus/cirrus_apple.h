@@ -1445,9 +1445,49 @@ static int cs_8409_apple_init(struct hda_codec *codec)
 	return 0;
 }
 
+static int cs_8409_boot_setup(struct hda_codec *codec);
+
+// the speaker bring-up (cs_8409_boot_setup) runs once at probe
+// after a hibernation (or any real power loss) the codec and the amps come back reset
+// and regmap_sync only replays cached HDA verbs - so the speakers stay silent
+// setup_gpio_set_20 leaves GPIO 1 (CS42L83 reset) and GPIO 5 (amps reset) as outputs driven high
+// and nothing after the bring-up changes them
+// a reset codec reads direction 0, but after a hibernate restore the codec read
+// direction 0x20 and data 0 - GPIO 5 driven low, amps held in reset
+// so either GPIO no longer an output driven high means the bring-up has to run again
+// a runtime resume with power_save keeps the GPIOs and stays cheap
+static int cs_8409_apple_lost_state(struct hda_codec *codec)
+{
+	unsigned int gpio_dir, gpio_data;
+
+	if (codec->core.subsystem_id != 0x106b3900)
+		return 0;
+	gpio_dir = snd_hda_codec_read(codec, codec->core.afg, 0, AC_VERB_GET_GPIO_DIRECTION, 0);
+	gpio_data = snd_hda_codec_read(codec, codec->core.afg, 0, AC_VERB_GET_GPIO_DATA, 0);
+	if ((gpio_dir & 0x22) == 0x22 && (gpio_data & 0x22) == 0x22)
+		return 0;
+	codec_info(codec, "cs_8409_apple_lost_state codec lost its state (GPIO direction 0x%02x data 0x%02x), running the boot setup again\n",
+		   gpio_dir, gpio_data);
+	return 1;
+}
+
 static int cs_8409_apple_resume(struct hda_codec *codec)
 {
         myprintk("snd_hda_intel: cs_8409_apple_resume\n");
+	if (cs_8409_apple_lost_state(codec)) {
+		struct cs8409_apple_spec *spec = codec->spec;
+
+		cs_8409_boot_setup(codec);
+		// a stream kept open over the suspend is only prepared again, not reopened
+		// so its init count (reset at open) would skip the play/capture setup on the
+		// codec the boot setup just reset - capture then runs and delivers no samples
+		spec->play_init = 0;
+		spec->play_init_count = 0;
+		spec->capture_init = 0;
+		spec->capture_init_count = 0;
+		spec->headset_play_format_setup_needed = 1;
+		spec->headset_capture_format_setup_needed = 1;
+	}
         // code copied from default resume ops
         snd_hda_codec_init(codec);       
 	snd_hda_regmap_sync(codec);
