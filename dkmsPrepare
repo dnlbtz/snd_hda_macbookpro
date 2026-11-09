@@ -1,0 +1,73 @@
+#!/bin/bash
+# dkmsPrepare <kernelver> -- DKMS PRE_BUILD: assemble build/hda for the 6.17
+# and later layout from the kernel's own sound/hda files and this repo's
+# patch_cirrus, with no network. What install.cirrus.driver.sh --dkms did,
+# minus the kernel.org download.
+#
+# Where the kernel files come from:
+# - Ubuntu and its derivatives: the distribution's linux-source package
+#   (/usr/src/linux-source-<x.y.z>/linux-source-<x.y.z>.tar.bz2), because
+#   Ubuntu backports change these headers. Ubuntu 26.04's 7.0.0 adds
+#   share_spdif_kctl to struct hda_bus in hda_local.h, which mainline 7.0
+#   does not have.
+# - everything else: the vanilla files vendored in kernel/<series>
+#   (vendorKernel).
+#
+# Refuses a kernel it has no matching files for: the module shares structs with
+# snd_hda_codec_generic and snd_hda_codec through these headers, so building it
+# against another kernel's copies could load and corrupt memory.
+
+set -eu
+kver=${1:?usage: dkmsPrepare <kernelver>}
+cd "$(dirname "$0")"
+
+files="codecs/cirrus/cs8409.c codecs/cirrus/cs8409.h codecs/cirrus/cs8409-tables.c
+       codecs/generic.h codecs/side-codecs/hda_component.h
+       common/hda_auto_parser.h common/hda_jack.h common/hda_local.h"
+
+isUbuntu() {
+  [ -r /etc/os-release ] || return 1
+  . /etc/os-release
+  [ "${ID:-}" = ubuntu ] || case " ${ID_LIKE:-} " in *" ubuntu "*) true ;; *) false ;; esac
+}
+
+hda=build/hda
+rm -rf build
+mkdir -p "$hda"
+
+if isUbuntu; then
+  base=$(echo "$kver" | sed -E 's/^([0-9]+\.[0-9]+\.[0-9]+).*/\1/')
+  tarball=/usr/src/linux-source-$base/linux-source-$base.tar.bz2
+  [ -f "$tarball" ] || tarball=/usr/src/linux-source-$base.tar.bz2
+  if [ ! -f "$tarball" ]; then
+    echo "dkmsPrepare: Ubuntu kernel $kver needs its source: sudo apt install linux-source-$base" >&2
+    exit 1
+  fi
+  tmp=build/src
+  mkdir -p "$tmp"
+  tar -xjf "$tarball" -C "$tmp" --strip-components=1 \
+    $(for f in $files; do echo "linux-source-$base/sound/hda/$f"; done)
+  cp -r "$tmp"/sound/hda/. "$hda"/
+  rm -rf "$tmp"
+  from=$tarball
+else
+  series=$(echo "$kver" | sed -E 's/^([0-9]+\.[0-9]+).*/\1/')
+  src=kernel/$series/sound/hda
+  if [ ! -d "$src" ]; then
+    echo "dkmsPrepare: no vendored sources for kernel $series (have: $(ls kernel | tr '\n' ' '))" >&2
+    echo "dkmsPrepare: run ./vendorKernel $series in the repo and rebuild the package" >&2
+    exit 1
+  fi
+  cp -r "$src"/. "$hda"/
+  from=kernel/$series
+fi
+
+cp makefiles/Makefile "$hda"/Makefile
+cp makefiles/Makefile_common "$hda"/common/Makefile
+cp makefiles/Makefile_codecs "$hda"/codecs/Makefile
+cp makefiles/Makefile_cirrus "$hda"/codecs/cirrus/Makefile
+cp patch_cirrus/cirrus_apple.h patch_cirrus/patch_cirrus_boot84.h patch_cirrus/patch_cirrus_new84.h \
+   patch_cirrus/patch_cirrus_real84.h patch_cirrus/patch_cirrus_hda_generic_copy.h \
+   patch_cirrus/patch_cirrus_real84_i2c.h "$hda"/codecs/cirrus/
+(cd "$hda" && patch -s -p1 < ../../patch_cs8409.c.diff && patch -s -p1 < ../../patch_cs8409.h.diff)
+echo "dkmsPrepare: build/hda ready for $kver from $from"

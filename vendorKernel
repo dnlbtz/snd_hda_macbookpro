@@ -1,0 +1,33 @@
+#!/bin/bash
+# vendorKernel <series> -- copy the vanilla kernel files the module needs into
+# kernel/<series>/sound/hda, so that the DKMS build (dkmsPrepare) needs no network.
+#
+#   ./vendorKernel 7.3
+#
+# The headers packages carry no sound/hda internals, and the old PRE_BUILD
+# downloaded linux-<version>.tar.xz from kernel.org inside pacman's DKMS hook,
+# which runs without network, so the build failed on every install and kernel
+# update. That download took the vanilla release too (falling back to
+# <major>.<minor>), so a vendored <series> gives the build what it had before.
+#
+# A new kernel series needs a run of this and a package rebuild; dkmsPrepare
+# refuses a series it has no files for instead of building against wrong headers.
+
+set -eu
+series=${1:?usage: vendorKernel <major.minor>}
+cd "$(dirname "$0")"
+
+files="codecs/cirrus/cs8409.c codecs/cirrus/cs8409.h codecs/cirrus/cs8409-tables.c
+       codecs/generic.h codecs/side-codecs/hda_component.h
+       common/hda_auto_parser.h common/hda_jack.h common/hda_local.h"
+
+major=${series%%.*}
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+curl -sSfL "https://cdn.kernel.org/pub/linux/kernel/v$major.x/linux-$series.tar.xz" |
+  tar -xJ -C "$tmp" $(for f in $files; do echo "linux-$series/sound/hda/$f"; done)
+
+dest=kernel/$series/sound/hda
+rm -rf "kernel/$series"
+for f in $files; do install -Dm644 "$tmp/linux-$series/sound/hda/$f" "$dest/$f"; done
+echo "vendorKernel: kernel/$series from linux-$series.tar.xz:"
+(cd "$dest" && sha256sum $files)
