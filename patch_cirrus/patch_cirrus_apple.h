@@ -819,6 +819,17 @@ static void cs_8409_pcm_capture_pre_prepare_hook(struct hda_pcm_stream *hinfo, s
                                int action);
 
 
+// with dyn_adc_switch there is a single capture pcm whose hinfo->nid is adc_nids[0]
+// - the adc actually wanted follows the Capture Source as in dyn_adc_capture_pcm_prepare
+static hda_nid_t cs_8409_capture_adc(struct hda_codec *codec, struct hda_pcm_stream *hinfo)
+{
+        struct hda_gen_spec *spec = codec->spec;
+
+        if (spec->dyn_adc_switch)
+                return spec->adc_nids[spec->dyn_adc_idx[spec->cur_mux[0]]];
+        return hinfo->nid;
+}
+
 // this is a copy from capture_pcm_prepare in hda_generic.c
 // NOTA BENE - if capture_pcm_prepare is changed in hda_generic.c then
 // those changes must be re-implemented here
@@ -829,11 +840,17 @@ static int cs_8409_capture_pcm_prepare(struct hda_pcm_stream *hinfo,
                                struct snd_pcm_substream *substream)
 {
         struct cs8409_apple_spec *spec = codec->spec;
+        hda_nid_t adc = cs_8409_capture_adc(codec, hinfo);
 
         mycodec_info(codec, "cs_8409_capture_pcm_prepare\n");
 
-        mycodec_info(codec, "cs_8409_capture_pcm_prepare: NID=0x%x, stream=0x%x, format=0x%x\n",
-                  hinfo->nid, stream_tag, format);
+        mycodec_info(codec, "cs_8409_capture_pcm_prepare: NID=0x%x, adc=0x%x, stream=0x%x, format=0x%x\n",
+                  hinfo->nid, adc, stream_tag, format);
+
+        // the generic dyn_adc cleanup and dyn_adc_pcm_resetup work on cur_adc
+        spec->gen.cur_adc = adc;
+        spec->gen.cur_adc_stream_tag = stream_tag;
+        spec->gen.cur_adc_format = format;
 
 
         cs_8409_pcm_capture_pre_prepare_hook(hinfo, codec, stream_tag, format, substream,
@@ -848,7 +865,7 @@ static int cs_8409_capture_pcm_prepare(struct hda_pcm_stream *hinfo,
 	//        - so as the format here is same (or at least should be!!) as that setup there is no format difference to that
 	//        cached and snd_hda_coded_setup_stream does nothing
 
-	if (hinfo->nid == spec->intmike_adc_nid)
+	if (adc == spec->intmike_adc_nid)
 	{
 
 	// so this is getting stranger and stranger
@@ -863,20 +880,20 @@ static int cs_8409_capture_pcm_prepare(struct hda_pcm_stream *hinfo,
 	// (is the internal mike a fake 24 bits - ie its actually 16 bits but stuffed in the low end of the
 	//  24 bits - hence low volume - preliminary scaling attempts in audacity suggest this might be true!!)
 
-        snd_hda_codec_setup_stream(codec, hinfo->nid, stream_tag, 0, format);
+        snd_hda_codec_setup_stream(codec, adc, stream_tag, 0, format);
 
 	}
-	else if (hinfo->nid == 0x1a)
+	else if (adc == 0x1a)
 	{
 
 	// do we need a pre-prepare function??
 	// maybe for this the external mike ie cs42l83 input
 
-        snd_hda_codec_setup_stream(codec, hinfo->nid, stream_tag, 0, format);
+        snd_hda_codec_setup_stream(codec, adc, stream_tag, 0, format);
 
 	}
 	else
-		dev_info(hda_codec_dev(codec), "cs_8409_capture_pcm_prepare - UNIMPLEMENTED input nid 0x%x\n",hinfo->nid);
+		dev_info(hda_codec_dev(codec), "cs_8409_capture_pcm_prepare - UNIMPLEMENTED input nid 0x%x\n",adc);
 
 	// we cant call directly as call_pcm_capture_hook is local to hda_generic.c
         //call_pcm_capture_hook(hinfo, codec, substream,

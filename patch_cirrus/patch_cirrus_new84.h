@@ -1916,7 +1916,8 @@ static void cs_8409_pcm_capture_pre_prepare_hook(struct hda_pcm_stream *hinfo, s
                 //} else {
 		//        cs_8409_store_stream_format(codec, hinfo->nid, stream_tag, format);
                 //}
-		cs_8409_store_stream_format(codec, hinfo->nid, stream_tag, format);
+		// store under the adc the Capture Source selects - the headset mike setup reads it for 0x1a
+		cs_8409_store_stream_format(codec, cs_8409_capture_adc(codec, hinfo), stream_tag, format);
 
 		// ensure the setup is only done once
 		if (spec->capture_init_count == 1) {
