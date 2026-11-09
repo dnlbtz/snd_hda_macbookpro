@@ -430,7 +430,7 @@ index d0b725c..d8b5232 100644
  	unsigned int suspended:1;
  	unsigned int paged:1;
  	unsigned int last_page;
-@@ -339,6 +365,152 @@
+@@ -339,6 +365,155 @@
  	unsigned int init_done:1;
  	unsigned int build_ctrl_done:1;
  
@@ -536,6 +536,9 @@ index d0b725c..d8b5232 100644
 +
 +	// set when capturing for plug/unplug events while capturing
 +	int capturing;
++
++	// the adc whose codec side the running capture has set up (0x1a headset mike, else internal mike), 0 if none
++	hda_nid_t capture_adc;
 +
 +	// changing coding - OSX sets up the format on plugin
 +	// then does some minimal setup when start play

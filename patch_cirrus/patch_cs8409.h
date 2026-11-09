@@ -471,6 +471,9 @@ struct cs8409_spec {
 	// set when capturing for plug/unplug events while capturing
 	int capturing;
 
+	// the adc whose codec side the running capture has set up (0x1a headset mike, else internal mike), 0 if none
+	hda_nid_t capture_adc;
+
 	// changing coding - OSX sets up the format on plugin
 	// then does some minimal setup when start play
 	// initial coding delayed any format setup till actually play
