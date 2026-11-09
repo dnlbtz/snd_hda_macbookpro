@@ -1,0 +1,73 @@
+#!/bin/bash
+# buildDeb -- build snd-hda-macbookpro-dkms_<version>_all.deb for Ubuntu and
+# its derivatives (Kubuntu 26.04 and later) from the tree this file sits in,
+# with plain dpkg-deb: no debhelper, no network.
+#
+#   packaging/debian/buildDeb [outdir]       (default: packaging/debian)
+#
+# Install on the Mac:  sudo apt install ./snd-hda-macbookpro-dkms_*.deb
+# then reboot. A newer .deb installs over an older one the same way.
+#
+# The DKMS version is the package version, so an update removes the old build
+# and builds the new one for every installed kernel. On Ubuntu, dkmsPrepare
+# takes the kernel's sound/hda files from linux-source (Depends below), not
+# from kernel/<series>: Ubuntu's headers differ from mainline.
+
+set -eu
+cd "$(dirname "$0")/../.."
+out=$(realpath "${1:-packaging/debian}")
+
+ver=0.1+r$(git rev-list --count HEAD).g$(git rev-parse --short=7 HEAD)
+[ -z "$(git status --porcelain -- . ':!packaging/debian/*.deb')" ] || ver=$ver.dirty
+name=snd_hda_macbookpro
+pkg=snd-hda-macbookpro-dkms
+
+root=$(mktemp -d); trap 'rm -rf "$root"' EXIT
+src=$root/usr/src/$name-$ver
+install -Dm644 -t "$src" Makefile patch_cs8409.c.diff patch_cs8409.h.diff LICENSE
+sed "s/^PACKAGE_VERSION=.*/PACKAGE_VERSION=\"$ver\"/" dkms.conf > "$src/dkms.conf"
+install -Dm755 -t "$src" dkmsPrepare
+install -Dm644 -t "$src/makefiles" makefiles/*
+install -Dm644 -t "$src/patch_cirrus" patch_cirrus/*.h
+find kernel -type f -exec install -Dm644 {} "$src/{}" \;
+
+mkdir -p "$root/DEBIAN"
+cat > "$root/DEBIAN/control" <<CTRL
+Package: $pkg
+Version: $ver
+Architecture: all
+Maintainer: Daniel Betz <dnlbtz@gmail.com>
+Depends: dkms, patch, bzip2, linux-headers-generic | linux-headers, linux-source
+Section: kernel
+Priority: optional
+Homepage: https://github.com/dnlbtz/snd_hda_macbookpro
+Description: Sound for Macs with the Cirrus CS8409 codec (DKMS)
+ davidjo's snd_hda_macbookpro driver for the speakers, headphones and mics of
+ the MacBook Pro 2016-2017 and similar Macs, with resume after hibernation
+ and the headset mic. Built by DKMS for every installed kernel, from the
+ distribution's own kernel source (linux-source).
+CTRL
+
+cat > "$root/DEBIAN/postinst" <<POST
+#!/bin/sh
+set -e
+[ "\$1" = configure ] || exit 0
+dkms add -m $name -v $ver >/dev/null 2>&1 || true
+for k in /lib/modules/*; do
+  k=\${k##*/}
+  [ -e /lib/modules/\$k/build ] || continue
+  dkms install -m $name -v $ver -k \$k || echo "$pkg: build for \$k failed, see /var/lib/dkms/$name/$ver/build/make.log" >&2
+done
+echo "$pkg: restart the computer to use the new sound driver"
+POST
+
+cat > "$root/DEBIAN/prerm" <<PRE
+#!/bin/sh
+set -e
+dkms remove -m $name -v $ver --all >/dev/null 2>&1 || true
+PRE
+chmod 755 "$root/DEBIAN/postinst" "$root/DEBIAN/prerm"
+
+deb=$out/${pkg}_${ver}_all.deb
+dpkg-deb --root-owner-group -Zxz --build "$root" "$deb" >/dev/null
+echo "$deb"

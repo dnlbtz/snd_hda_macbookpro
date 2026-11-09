@@ -1,0 +1,51 @@
+# Maintainer: Daniel Betz <dnlbtz@gmail.com>
+#
+# davidjo's CS8409 driver for the MacBookPro14,3 with this fork's changes
+# (resume brings the speakers up again after a hibernation), as a DKMS package
+# whose build needs no network: the kernel files come vendored (kernel/<series>,
+# vendorKernel) instead of from kernel.org inside pacman's hook. Builds from the
+# tree this file sits in: `makepkg -f` here. Replaces the AUR's
+# snd-hda-macbookpro-dkms-git, under the same DKMS name and /usr/src path.
+
+pkgname=snd-hda-macbookpro-dkms
+pkgver=0
+pkgrel=1
+pkgdesc='Kernel driver for sound on Macs with the Cirrus CS8409 (davidjo), with resume after hibernation, offline DKMS build'
+arch=('any')
+url='https://github.com/davidjo/snd_hda_macbookpro'
+license=('GPL-2.0-only')
+depends=('dkms' 'patch')
+makedepends=('git')
+provides=('snd-hda-macbookpro-dkms-git')
+conflicts=('snd-hda-macbookpro-dkms-git')
+replaces=('snd-hda-macbookpro-dkms-git')
+source=()
+sha256sums=()
+
+_tree="$startdir/../.."
+_dest=usr/src/snd-hda-macbookpro-0.1
+
+pkgver() {
+  cd "$_tree"
+  printf 'r%s.%s' "$(git rev-list --count HEAD)" "$(git rev-parse --short=7 HEAD)"
+}
+
+check() {
+  # every series dkmsPrepare can be asked for must be complete
+  cd "$_tree"
+  for s in kernel/*/; do
+    for f in codecs/cirrus/cs8409.c codecs/cirrus/cs8409.h codecs/cirrus/cs8409-tables.c codecs/generic.h \
+             codecs/side-codecs/hda_component.h common/hda_auto_parser.h common/hda_jack.h common/hda_local.h; do
+      [ -f "$s/sound/hda/$f" ] || { echo "missing $s/sound/hda/$f"; return 1; }
+    done
+  done
+}
+
+package() {
+  cd "$_tree"
+  install -Dm644 -t "$pkgdir/$_dest" dkms.conf Makefile patch_cs8409.c.diff patch_cs8409.h.diff LICENSE
+  install -Dm755 -t "$pkgdir/$_dest" dkmsPrepare
+  install -Dm644 -t "$pkgdir/$_dest/makefiles" makefiles/*
+  install -Dm644 -t "$pkgdir/$_dest/patch_cirrus" patch_cirrus/*.h
+  find kernel -type f -exec install -Dm644 {} "$pkgdir/$_dest/{}" \;
+}
