@@ -2028,6 +2028,14 @@ static void cs_8409_inputs_power_nids_on(struct hda_codec *codec)
 
 }
 
+// true while a capture runs from the internal mike - plug and unplug must leave it alone
+static int cs_8409_intmike_capturing(struct hda_codec *codec)
+{
+        struct cs8409_apple_spec *spec = codec->spec;
+
+        return spec->capturing && spec->capture_adc && spec->capture_adc != 0x1a;
+}
+
 static void cs_8409_inputs_power_nids_off(struct hda_codec *codec)
 {
         int retval;
@@ -2863,11 +2871,7 @@ static int cs_8409_boot_setup_real(struct hda_codec *codec)
 
 				cs42l83_headset_mike_pin_enable(codec);
 
-                                // is this a good position to switch the inputs??
-                                // just before enable buttons is where we switch inputs on plugin
-                                // note that this is just telling Alsa the input source has changed
-                                // - no changes to audio setup at all
-                                switch_input_src(codec);
+                                // the input source is left to the Capture Source control
 
 
                                 //#10040:  cs_8409_headset_mike_buttons_enable
@@ -3249,11 +3253,15 @@ static void cs_8409_playstop_real(struct hda_codec *codec)
         cs_8409_amps_disable_streaming(codec);
 
 
-        //snd_hda_codec_write(codec, codec->core.afg, 0, AC_VERB_SET_POWER_STATE, 0x00000003); // 0x00170503
-        hda_set_node_power_state(codec, codec->core.afg, AC_PWRST_D3);
+        // a running capture still needs the afg and its input nids
+        if (!spec->capturing)
+        {
+                //snd_hda_codec_write(codec, codec->core.afg, 0, AC_VERB_SET_POWER_STATE, 0x00000003); // 0x00170503
+                hda_set_node_power_state(codec, codec->core.afg, AC_PWRST_D3);
 
-        // weird - why set the inputs to powered off when stop playing??
-        cs_8409_inputs_power_nids_off(codec);
+                // weird - why set the inputs to powered off when stop playing??
+                cs_8409_inputs_power_nids_off(codec);
+        }
 
 
         // this is now going to run under mutex lock set in cs_8409_pcm_playback_pre_prepare_hook so nothing needed here
@@ -4849,7 +4857,8 @@ static void cs_8409_plugin_event_continued(struct hda_codec *codec)
                 {
 
                         // ensure the intmike/linein nids are powered off
-                        cs_8409_inputs_power_nids_off(codec);
+                        if (!cs_8409_intmike_capturing(codec))
+                                cs_8409_inputs_power_nids_off(codec);
 
 
                         retval = cs42l83_headphone_sense(codec);
@@ -4871,10 +4880,9 @@ static void cs_8409_plugin_event_continued(struct hda_codec *codec)
                                 // this is just calling this routine
                                 //cs_8409_headset_mike_setup_nouse
 
-                                cs_8409_intmike_linein_disable(codec);
-
-                                // is this a good position to switch the inputs??
-                                switch_input_src(codec);
+                                // the internal mike stays usable - the Capture Source control picks the input
+                                if (!cs_8409_intmike_capturing(codec))
+                                        cs_8409_intmike_linein_disable(codec);
 
                                 // confirmed that if do a second recording we get a full setup as for playing above
                                 // - so why not just enable when we capture??
@@ -5660,7 +5668,7 @@ static void cs_8409_unplug_handle_disconnect(struct hda_codec *codec)
                 //unplug_sync_converters2_on(codec);
 
 
-                if (!(spec->have_mike))
+                if (!(spec->have_mike) && !cs_8409_intmike_capturing(codec))
                 {
                         cs_8409_inputs_power_nids_off(codec);
                 }
@@ -5694,26 +5702,27 @@ static void cs_8409_unplug_handle_disconnect(struct hda_codec *codec)
 
                                 cs42l83_headset_amp_disable_and_mike_format_setup_disable(codec);
 
-                                // is this a good position to switch the inputs??
-                                switch_input_src(codec);
-
                                 //unplug23_intmike_linein_resetup(codec);
 
-                                cs_8409_intmike_linein_resetup(codec);
+                                if (!cs_8409_intmike_capturing(codec))
+                                        cs_8409_intmike_linein_resetup(codec);
 
                                 mycodec_info(codec, "cs_8409_unplug_handle_disconnect headset have mike end\n");
                         }
 
-                        if (spec->playing)
+                        if (!cs_8409_intmike_capturing(codec))
                         {
-                                if (!(spec->have_mike))
+                                if (spec->playing)
                                 {
-                                        cs_8409_inputs_power_nids_off(codec);
+                                        if (!(spec->have_mike))
+                                        {
+                                                cs_8409_inputs_power_nids_off(codec);
+                                        }
                                 }
-                        }
 
-                        if (spec->have_mike)
-                                cs_8409_inputs_power_nids_off(codec);
+                                if (spec->have_mike)
+                                        cs_8409_inputs_power_nids_off(codec);
+                        }
 
 
                         mycodec_info(codec, "cs_8409_unplug_handle_disconnect headset disable start\n");
@@ -5908,6 +5917,7 @@ static void cs_8409_headset_streaming_preplay(struct hda_codec *codec)
 
 static void cs_8409_enable_headset_streaming(struct hda_codec *codec)
 {
+        struct cs8409_apple_spec *spec = codec->spec;
         //int retval;
 
         mycodec_info(codec, "cs_8409_enable_headset_streaming start\n");
@@ -5926,7 +5936,19 @@ static void cs_8409_enable_headset_streaming(struct hda_codec *codec)
         // power on audio output
         cs42l83_set_power_state_on(codec, 0);
 
-        cs42l83_headset_enable_on(codec);
+        // unmute the headphone output only for a playback that is already running
+        // (a headset plugged in while playing): a capture from the headset mike
+        // brings this side up too, and unmuting it with nothing playing is the
+        // noise heard when a recording moves to the headset mike. A playback
+        // prepare unmutes it itself (cs_8409_pcm_playback_pre_prepare_hook)
+        if (spec->playing)
+        {
+                cs42l83_headset_enable_on(codec);
+        }
+        else
+        {
+                mycodec_info(codec, "cs_8409_enable_headset_streaming headphone output left muted, nothing playing\n");
+        }
 
         mycodec_info(codec, "cs_8409_enable_headset_streaming end\n");
 

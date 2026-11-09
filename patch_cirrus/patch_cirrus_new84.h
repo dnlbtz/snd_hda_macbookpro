@@ -1669,6 +1669,11 @@ static void cs_8409_pcm_playback_pre_prepare_hook(struct hda_pcm_stream *hinfo, 
 				{
 					cs_8409_headplay_setup(codec);
 				}
+				// the setup leaves the headphone output muted when nothing is playing yet
+				// (cs_8409_enable_headset_streaming), and a capture from the headset mike
+				// may have brought this side up muted already - unmute it now, before the
+				// stream starts
+				cs42l83_headset_enable_on(codec);
 				//mutex_unlock(&spec->i2ccodeblock_lock);
 			}
 			else {
@@ -1833,10 +1838,21 @@ static void cs_8409_playback_pcm_hook(struct hda_pcm_stream *hinfo, struct hda_c
 			//spec->block_unsol = 1;
 			// the big question is to lock here or to lock in the outer call
 			//mutex_lock(&spec->i2ccodeblock_lock);
-			// so dont think need to anything about capturing here
-			cs_8409_headplay_cleanup(codec);
-			//mutex_unlock(&spec->i2ccodeblock_lock);
-			spec->headset_play_format_setup_needed = 1;
+			// a capture from the headset mike runs on the same CS42L83 - the full headphone
+			// cleanup powers the whole chip down (cs42l83_power_onoff 0) and that capture
+			// stops delivering until it is reopened
+			// so leave the headphone side as it is - cs_8409_capture_input_stop runs
+			// cs_8409_headplay_cleanup when the capture ends with nothing playing
+			if (spec->capturing && spec->capture_adc == 0x1a)
+			{
+				mycodec_info(codec, "cs_8409_playback_pcm_hook headset mike capturing - headphone cleanup left to the capture stop\n");
+			}
+			else
+			{
+				cs_8409_headplay_cleanup(codec);
+				//mutex_unlock(&spec->i2ccodeblock_lock);
+				spec->headset_play_format_setup_needed = 1;
+			}
 		}
                 else
 		        cs_8409_play_cleanup(codec);
@@ -1862,6 +1878,94 @@ static void cs_8409_playback_pcm_hook(struct hda_pcm_stream *hinfo, struct hda_c
 
 }
 
+
+// the codec side of a capture follows the adc the Capture Source selects, not the jack:
+// 0x1a is the headset mike through the cs42l83, anything else the internal mike
+static void cs_8409_capture_input_start(struct hda_codec *codec, hda_nid_t adc)
+{
+	struct cs8409_apple_spec *spec = codec->spec;
+
+	mycodec_info(codec, "cs_8409_capture_input_start adc 0x%02x jack present %d have mike %d\n", adc, spec->jack_present, spec->have_mike);
+
+	if (adc == 0x1a)
+	{
+		if (spec->jack_present && spec->have_mike)
+		{
+			// so it seems if we have a headset mike we always enable the
+			// headphones even if just capturing
+			if (spec->headset_play_format_setup_needed)
+			{
+				cs_8409_headplay_setup(codec);
+				spec->headset_play_format_setup_needed = 0;
+			}
+			if (spec->headset_capture_format_setup_needed)
+			{
+				cs_8409_headcapture_setup(codec);
+				spec->headset_capture_format_setup_needed = 0;
+			}
+		}
+	}
+	else
+		cs_8409_capture_setup(codec);
+
+	spec->capture_adc = adc;
+
+	mycodec_info(codec, "cs_8409_capture_input_start end\n");
+}
+
+static void cs_8409_capture_input_stop(struct hda_codec *codec)
+{
+	struct cs8409_apple_spec *spec = codec->spec;
+
+	mycodec_info(codec, "cs_8409_capture_input_stop adc 0x%02x\n", spec->capture_adc);
+
+	if (spec->capture_adc == 0x1a)
+	{
+		// the unplug handler resets these flags when it has already shut the headset down
+		if (spec->headset_capture_format_setup_needed == 0)
+		{
+			cs_8409_headcapture_cleanup(codec);
+			spec->headset_capture_format_setup_needed = 1;
+		}
+		if (!spec->playing)
+		{
+			if (spec->headset_play_format_setup_needed == 0)
+			{
+				cs_8409_headplay_cleanup(codec);
+				spec->headset_play_format_setup_needed = 1;
+			}
+		}
+	}
+	else if (spec->capture_adc)
+		cs_8409_capture_cleanup(codec);
+
+	spec->capture_adc = 0;
+
+	mycodec_info(codec, "cs_8409_capture_input_stop end\n");
+}
+
+// mux_select calls this after a Capture Source change (dyn_adc_pcm_resetup has
+// already moved the stream to the new adc) - move a running capture's codec side along
+static void cs_8409_cap_sync(struct hda_codec *codec, struct snd_kcontrol *kcontrol,
+                             struct snd_ctl_elem_value *ucontrol)
+{
+	struct cs8409_apple_spec *spec = codec->spec;
+	hda_nid_t adc = cs_8409_capture_adc(codec);
+
+	if (!spec->capturing || !spec->capture_adc || adc == spec->capture_adc)
+		return;
+
+	mycodec_info(codec, "cs_8409_cap_sync capture moves from adc 0x%02x to 0x%02x\n", spec->capture_adc, adc);
+
+	cs_8409_store_stream_format(codec, adc, spec->gen.cur_adc_stream_tag, spec->gen.cur_adc_format);
+
+	mutex_lock(&spec->i2ccodeblock_lock);
+	cs_8409_capture_input_stop(codec);
+	cs_8409_capture_input_start(codec, adc);
+	mutex_unlock(&spec->i2ccodeblock_lock);
+
+	mycodec_info(codec, "cs_8409_cap_sync end\n");
+}
 
 static void cs_8409_pcm_capture_pre_prepare_hook(struct hda_pcm_stream *hinfo, struct hda_codec *codec,
                                unsigned int stream_tag, unsigned int format, struct snd_pcm_substream *substream,
@@ -1917,52 +2021,16 @@ static void cs_8409_pcm_capture_pre_prepare_hook(struct hda_pcm_stream *hinfo, s
 		//        cs_8409_store_stream_format(codec, hinfo->nid, stream_tag, format);
                 //}
 		// store under the adc the Capture Source selects - the headset mike setup reads it for 0x1a
-		cs_8409_store_stream_format(codec, cs_8409_capture_adc(codec, hinfo), stream_tag, format);
+		cs_8409_store_stream_format(codec, cs_8409_capture_adc(codec), stream_tag, format);
 
 		// ensure the setup is only done once
 		if (spec->capture_init_count == 1) {
 
 		        myprintk("snd_hda_intel: command cs_8409_pcm_capture_pre_prepare_hook hinfo nid 0x%02x jack present %d have mike %d\n",hinfo->nid, spec->jack_present, spec->have_mike);
 
-			// for the moment have junky test here
-			if (spec->jack_present) {
-				// NOTE - we may well not need this - not sure the capture prepare generates an unsol response
-				//spec->block_unsol = 1;
-				mutex_lock(&spec->i2ccodeblock_lock);
-				if (spec->have_mike)
-				{
-					// so it seems if we have a headset mike we always enable the
-					// headphones even if just capturing
-		                        myprintk("snd_hda_intel: command cs_8409_pcm_capture_pre_prepare_hook HOOK PREPARE play format setup %d",spec->headset_play_format_setup_needed);
-					if (spec->headset_play_format_setup_needed)
-					{
-						cs_8409_headplay_setup(codec);
-						spec->headset_play_format_setup_needed = 0;
-					}
-		                        myprintk("snd_hda_intel: command cs_8409_pcm_capture_pre_prepare_hook HOOK PREPARE capture format setup %d",spec->headset_capture_format_setup_needed);
-					if (spec->headset_capture_format_setup_needed)
-					{
-						cs_8409_headcapture_setup(codec);
-						spec->headset_capture_format_setup_needed = 0;
-					}
-				}
-				else
-				{
-#ifdef INTERNAL_MIKE_ONLY
-                                        // unfortunately this does not work nicely with have_mike headsets
-                                        // so for the moment only do this if this build flag is set
-                                        // initialize the internal mike if no headset mike
-                                        // so can capture from the internal mike
-                                        // has been tested and seems to work but I have not verified this
-					cs_8409_capture_setup(codec);
-#endif
-				}
-				mutex_unlock(&spec->i2ccodeblock_lock);
-				// NOTE - still not fixed linein/lineout working - this may need
-				// changing here
-			}
-			else
-				cs_8409_capture_setup(codec);
+			mutex_lock(&spec->i2ccodeblock_lock);
+			cs_8409_capture_input_start(codec, cs_8409_capture_adc(codec));
+			mutex_unlock(&spec->i2ccodeblock_lock);
 		}
 
 		myprintk("snd_hda_intel: command cs_8409_capture_pcm_hook setup capture called");
@@ -2050,31 +2118,7 @@ static void cs_8409_capture_pcm_hook(struct hda_pcm_stream *hinfo, struct hda_co
 		// this is more equivalent to the cs_8409_capture_pcm_hook_cleanup_locked code
 		// and would block unsol responses during cs_8409_capture_cleanup in addition to cs_8409_headcapture_cleanup
 		mutex_lock(&spec->i2ccodeblock_lock);
-		// for the moment have junky test here
-		if (spec->jack_present)
-		{
-			// NOTE - we may well not need this - not sure the capture prepare generates an unsol response
-			// for the moment I think this works for both MB 14,1 and 14,3 - same hda and headphone chip
-			// note that so far only the headphone chip seems to generate unsol responses usually
-			//spec->block_unsol = 1;
-			//mutex_lock(&spec->i2ccodeblock_lock);
-			if (spec->headset_capture_format_setup_needed == 0)
-			{
-				cs_8409_headcapture_cleanup(codec);
-				spec->headset_capture_format_setup_needed = 1;
-			}
-			if (!spec->playing)
-			{
-				if (spec->headset_play_format_setup_needed == 0)
-				{
-					cs_8409_headplay_cleanup(codec);
-					spec->headset_play_format_setup_needed = 1;
-				}
-			}
-			//mutex_unlock(&spec->i2ccodeblock_lock);
-		}
-                else
-		        cs_8409_capture_cleanup(codec);
+		cs_8409_capture_input_stop(codec);
 		mutex_unlock(&spec->i2ccodeblock_lock);
 		myprintk("snd_hda_intel: command cs_8409_capture_pcm_hook done capture cleanup");
 		//spec->block_unsol = 0;

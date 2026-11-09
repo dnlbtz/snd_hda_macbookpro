@@ -543,6 +543,9 @@ struct cs8409_apple_spec {
 	// set when capturing for plug/unplug events while capturing
 	int capturing;
 
+	// the adc whose codec side the running capture has set up (0x1a headset mike, else internal mike), 0 if none
+	hda_nid_t capture_adc;
+
 	// changing coding - OSX sets up the format on plugin
 	// then does some minimal setup when start play
 	// initial coding delayed any format setup till actually play
@@ -845,13 +848,13 @@ static void cs_8409_pcm_capture_pre_prepare_hook(struct hda_pcm_stream *hinfo, s
 
 // with dyn_adc_switch there is a single capture pcm whose hinfo->nid is adc_nids[0]
 // - the adc actually wanted follows the Capture Source as in dyn_adc_capture_pcm_prepare
-static hda_nid_t cs_8409_capture_adc(struct hda_codec *codec, struct hda_pcm_stream *hinfo)
+static hda_nid_t cs_8409_capture_adc(struct hda_codec *codec)
 {
         struct hda_gen_spec *spec = codec->spec;
 
         if (spec->dyn_adc_switch)
                 return spec->adc_nids[spec->dyn_adc_idx[spec->cur_mux[0]]];
-        return hinfo->nid;
+        return spec->adc_nids[0];
 }
 
 // this is a copy from capture_pcm_prepare in hda_generic.c
@@ -864,7 +867,7 @@ static int cs_8409_capture_pcm_prepare(struct hda_pcm_stream *hinfo,
                                struct snd_pcm_substream *substream)
 {
         struct cs8409_apple_spec *spec = codec->spec;
-        hda_nid_t adc = cs_8409_capture_adc(codec, hinfo);
+        hda_nid_t adc = cs_8409_capture_adc(codec);
 
         mycodec_info(codec, "cs_8409_capture_pcm_prepare\n");
 
@@ -3038,6 +3041,8 @@ static void cs_8409_capture_pcm_hook(struct hda_pcm_stream *hinfo,
                                      struct hda_codec *codec,
                                      struct snd_pcm_substream *substream,
                                      int action);
+static void cs_8409_cap_sync(struct hda_codec *codec, struct snd_kcontrol *kcontrol,
+                             struct snd_ctl_elem_value *ucontrol);
 
 // new attempt if we decide to use the existing fixup mechanism to handle setup
 
@@ -3784,6 +3789,7 @@ static int cs8409_apple(struct hda_codec *codec)
 	spec->gen.pcm_playback_hook = cs_8409_playback_pcm_hook;
 
 	spec->gen.pcm_capture_hook = cs_8409_capture_pcm_hook;
+	spec->gen.cap_sync_hook = cs_8409_cap_sync;
 
 	spec->gen.automute_hook = cs_8409_automute;
 
