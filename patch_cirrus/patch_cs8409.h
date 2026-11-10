@@ -417,6 +417,11 @@ struct cs8409_spec {
 	int codec_suspended;
 	int subcodec_suspended;
 
+	// GPIO mask and direction as the boot setup left them
+	// resume compares the codec against these to see if it lost its setup
+	unsigned int boot_gpio_mask;
+	unsigned int boot_gpio_dir;
+
 	// add in specific nids for the intmike and linein as they seem to swap
 	// between macbook pros (14,3) and imacs (18,3)
 	int intmike_nid;

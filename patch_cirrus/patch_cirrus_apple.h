@@ -490,6 +490,11 @@ struct cs8409_apple_spec {
 	int codec_suspended;
 	int subcodec_suspended;
 
+	// GPIO mask and direction as the boot setup left them
+	// resume compares the codec against these to see if it lost its setup
+	unsigned int boot_gpio_mask;
+	unsigned int boot_gpio_dir;
+
 	// add in specific nids for the intmike and linein as they seem to swap
 	// between macbook pros (14,3) and imacs (18,3)
 	int intmike_nid;
@@ -1638,6 +1643,49 @@ static int cs_8409_wait_for_resume(struct hda_codec *codec, int msleeptim, int t
         return 0;
 }
 
+static int cs_8409_boot_setup(struct hda_codec *codec);
+
+// the boot setup (cs_8409_boot_setup) runs once at probe
+// when the codec loses power (S3, or the power off of a hibernation) the codec and the
+// amps come back reset, and resume only replays cached HDA verbs - the speakers stay silent
+// the GPIO mask and direction show it: the boot setup leaves them at board specific values
+// that nothing changes afterwards, so they are saved at the end of it and resume runs the
+// boot setup again when the codec no longer reads the same
+// after S3 everything reads 0; after a hibernate restore a MacBookPro14,3 read mask and
+// direction 0x20 instead of 0x27/0x22 (GPIO 5, the amps reset, driven low by the firmware)
+// and a MacBookPro14,2 read mask 0
+// a runtime resume (power_save) keeps the GPIOs, so nothing is run again then
+// GPIO data is not compared - inputs such as the CS42L83 interrupt line change it
+static void cs_8409_apple_save_gpio_state(struct hda_codec *codec)
+{
+        struct cs8409_apple_spec *spec = codec->spec;
+
+        spec->boot_gpio_mask = snd_hda_codec_read(codec, codec->core.afg, 0, AC_VERB_GET_GPIO_MASK, 0);
+        spec->boot_gpio_dir = snd_hda_codec_read(codec, codec->core.afg, 0, AC_VERB_GET_GPIO_DIRECTION, 0);
+        codec_info(codec, "cs_8409_apple_save_gpio_state GPIO mask 0x%02x direction 0x%02x after the boot setup\n",
+                   spec->boot_gpio_mask, spec->boot_gpio_dir);
+}
+
+static int cs_8409_apple_lost_state(struct hda_codec *codec)
+{
+        struct cs8409_apple_spec *spec = codec->spec;
+        unsigned int gpio_mask, gpio_dir;
+
+        // nothing saved - the boot setup has not finished or set no GPIOs
+        if (!spec->boot_gpio_mask)
+                return 0;
+        gpio_mask = snd_hda_codec_read(codec, codec->core.afg, 0, AC_VERB_GET_GPIO_MASK, 0);
+        gpio_dir = snd_hda_codec_read(codec, codec->core.afg, 0, AC_VERB_GET_GPIO_DIRECTION, 0);
+        // a codec that does not answer reads all ones - nothing to set up then
+        if (gpio_mask == 0xffffffff)
+                return 0;
+        if (gpio_mask == spec->boot_gpio_mask && gpio_dir == spec->boot_gpio_dir)
+                return 0;
+        codec_info(codec, "cs_8409_apple_lost_state codec lost its setup (GPIO mask 0x%02x direction 0x%02x, after the boot setup 0x%02x 0x%02x), running the boot setup again\n",
+                   gpio_mask, gpio_dir, spec->boot_gpio_mask, spec->boot_gpio_dir);
+        return 1;
+}
+
 static int cs_8409_apple_resume(struct hda_codec *codec)
 {
         myprintk("snd_hda_intel: cs_8409_apple_resume\n");
@@ -1652,6 +1700,21 @@ static int cs_8409_apple_resume(struct hda_codec *codec)
         else
                 { myprintk("snd_hda_intel: cs_8409_apple_resume pm event %d UNKNOWN!!\n", codec->core.dev.power.power_state.event); }
 	myprintk("snd_hda_intel: cs_8409_apple_resume codec_suspended %d\n", spec->codec_suspended);
+        if (cs_8409_apple_lost_state(codec))
+        {
+                if (cs_8409_boot_setup(codec) < 0)
+                        codec_err(codec, "cs_8409_apple_resume boot setup failed\n");
+                // a stream kept open over the suspend is only prepared again, not reopened,
+                // so its init count (reset at open) would skip the play/capture setup on the
+                // codec the boot setup just reset - a held capture then delivers no samples
+                spec->play_init = 0;
+                spec->play_init_count = 0;
+                spec->capture_init = 0;
+                spec->capture_init_count = 0;
+                spec->headset_play_format_setup_needed = 1;
+                spec->headset_capture_format_setup_needed = 1;
+                cs_8409_apple_save_gpio_state(codec);
+        }
         // code copied from default resume patch ops
 	if (codec->patch_ops.init)
 	        codec->patch_ops.init(codec);
@@ -3673,6 +3736,8 @@ static int patch_cs8409_apple(struct hda_codec *codec)
        err = cs_8409_boot_setup(codec);
        if (err < 0)
                goto error;
+
+       cs_8409_apple_save_gpio_state(codec);
 
        // update the headset phase
        spec->headset_phase = 2;
