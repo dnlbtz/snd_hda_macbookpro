@@ -4924,6 +4924,7 @@ static void cs_8409_plugin_event_continued(struct hda_codec *codec)
         else
                {} // headset unplugged - should be handled by the unplug interrupt
 
+        cs_8409_squelch_snapshot(codec, "end of plugin_event_continued");
         mycodec_info(codec, "cs_8409_plugin_event_continued end\n");
 }
 

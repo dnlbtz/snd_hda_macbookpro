@@ -1103,6 +1103,16 @@ static void cs_8409_play_data_ssm3(struct hda_codec *codec)
 
 #include "patch_cirrus_real84_i2c.h"
 
+// SQUELCH test: the CS42L83 mixer and monitor registers
+static void cs_8409_squelch_snapshot(struct hda_codec *codec, const char *where)
+{
+        codec_info(codec, "SQUELCH %s: 0x2301 %02x 0x2302 %02x 0x2303 %02x 0x1f06 %02x 0x2001 %02x 0x1d03 %02x 0x2a01 %02x 0x2901 %02x\n", where,
+                   cs_8409_vendor_i2cRead(codec, 0x90, 0x2301, 1) & 0xff, cs_8409_vendor_i2cRead(codec, 0x90, 0x2302, 1) & 0xff,
+                   cs_8409_vendor_i2cRead(codec, 0x90, 0x2303, 1) & 0xff, cs_8409_vendor_i2cRead(codec, 0x90, 0x1f06, 1) & 0xff,
+                   cs_8409_vendor_i2cRead(codec, 0x90, 0x2001, 1) & 0xff, cs_8409_vendor_i2cRead(codec, 0x90, 0x1d03, 1) & 0xff,
+                   cs_8409_vendor_i2cRead(codec, 0x90, 0x2a01, 1) & 0xff, cs_8409_vendor_i2cRead(codec, 0x90, 0x2901, 1) & 0xff);
+}
+
 #include "patch_cirrus_real84.h"
 
 // only needed if wish to test the version using the mb141 logs
@@ -1674,6 +1684,7 @@ static void cs_8409_pcm_playback_pre_prepare_hook(struct hda_pcm_stream *hinfo, 
 				// may have brought this side up muted already - unmute it now, before the
 				// stream starts
 				cs42l83_headset_enable_on(codec);
+				cs_8409_squelch_snapshot(codec, "after playback prepare unmute");
 				//mutex_unlock(&spec->i2ccodeblock_lock);
 			}
 			else {
@@ -1909,6 +1920,7 @@ static void cs_8409_capture_input_start(struct hda_codec *codec, hda_nid_t adc)
 		cs_8409_capture_setup(codec);
 
 	spec->capture_adc = adc;
+	if (adc == 0x1a) cs_8409_squelch_snapshot(codec, "after capture start on 0x1a");
 
 	mycodec_info(codec, "cs_8409_capture_input_start end\n");
 }
