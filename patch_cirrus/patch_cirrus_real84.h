@@ -3621,9 +3621,15 @@ static int cs_8409_read_status_and_clear_interrupt(struct hda_codec *codec)
         while (1)
         {
 
-                retint = cs42l83_read_status_and_clear_interrupt(codec);
+                retval = cs42l83_read_status_and_clear_interrupt(codec);
 
-                codec_info(codec, "cs_8409_read_status_and_clear_interrupt - UNSOL status 0x%08x\n",retint);
+                codec_info(codec, "cs_8409_read_status_and_clear_interrupt - UNSOL status 0x%08x\n",retval);
+
+                // each read clears what it returns, so a later pass only sees what came after:
+                // keep every pass's bits, as AppleHDATDM_CS42L83::readStatusAndClearInterrupt does
+                // (it ORs the status bytes on every call after the first), or an unplug read on
+                // the first pass is lost when the line is still low and a second pass runs
+                retint |= retval;
 
                 retval = read_gpio_status_check(codec);
 
