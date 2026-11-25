@@ -1,0 +1,46 @@
+#!/bin/bash
+# vendorKernel <version> -- copy the mainline kernel files the module needs into
+# packaging/dkms/kernel/<x.y.z>, so that the DKMS build (dkmsPrepare) needs no
+# network.
+#
+#   packaging/dkms/vendorKernel 7.3.6
+#
+# The headers packages carry no sound/hda internals, and the old PRE_BUILD
+# downloaded the kernel source from kernel.org inside pacman's DKMS hook, which
+# runs without network, so the build failed on every install and kernel update.
+#
+# The files can change within a series: 7.0.10 added a field to struct hda_bus
+# (hda_local.h), 7.3.6 made the jack table a linked list (hda_codec.h,
+# hda_jack.h). So a set is kept for every point release where one of them
+# changes, and dkmsPrepare takes the newest set that is not newer than the
+# kernel. include/sound/hda_codec.h is kept too: dkmsPrepare compares it with
+# the installed kernel's copy and refuses when they differ.
+
+set -eu
+version=${1:?usage: vendorKernel <x.y or x.y.z>}
+cd "$(dirname "$0")"
+
+case $version in
+  *.*.0) tag=v${version%.0} ;;
+  *.*.*) tag=v$version ;;
+  *.*)   tag=v$version; version=$version.0 ;;
+  *)     echo "vendorKernel: not a version: $version" >&2; exit 1 ;;
+esac
+
+files="sound/hda/codecs/cirrus/cs8409.c sound/hda/codecs/cirrus/cs8409.h
+       sound/hda/codecs/cirrus/cs8409-tables.c sound/hda/codecs/generic.h
+       sound/hda/codecs/side-codecs/hda_component.h
+       sound/hda/common/hda_auto_parser.h sound/hda/common/hda_jack.h
+       sound/hda/common/hda_local.h include/sound/hda_codec.h"
+
+base=https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+for f in $files; do
+  mkdir -p "$tmp/$(dirname "$f")"
+  curl -sSf "$base/$f?h=$tag" -o "$tmp/$f"
+done
+
+rm -rf "kernel/$version"
+for f in $files; do install -Dm644 "$tmp/$f" "kernel/$version/$f"; done
+echo "vendorKernel: kernel/$version from $tag:"
+(cd "kernel/$version" && sha256sum $files)
