@@ -1,0 +1,54 @@
+# Maintainer: Daniel Betz <dnlbtz@gmail.com>
+#
+# davidjo's CS8409 driver for the MacBookPro14,3 with this fork's changes
+# (resume brings the speakers up again after a hibernation), as a DKMS package
+# whose build needs no network: the kernel files come vendored
+# (packaging/dkms/kernel/<x.y.z>, vendorKernel) instead of from kernel.org
+# inside pacman's hook. Builds from the tree this file sits in: `makepkg -f`
+# here. Replaces snd-hda-macbookpro-dkms, this package's earlier name, and the
+# AUR's snd-hda-macbookpro-dkms-git, under the same DKMS name and /usr/src
+# path.
+
+pkgname=snd-hda-macbookpro-resume-dkms
+pkgver=0
+pkgrel=1
+pkgdesc='Kernel driver for sound on MacBook Pros with the Cirrus CS8409, with resume after hibernation and the headset mic (DKMS)'
+arch=('any')
+url='https://github.com/davidjo/snd_hda_macbookpro'
+license=('GPL-2.0-only')
+depends=('dkms' 'patch')
+makedepends=('git')
+provides=('snd-hda-macbookpro-dkms-git')
+conflicts=('snd-hda-macbookpro-dkms-git' 'snd-hda-macbookpro-dkms')
+replaces=('snd-hda-macbookpro-dkms-git' 'snd-hda-macbookpro-dkms')
+source=()
+sha256sums=()
+
+_tree="$startdir/../.."
+_dest=usr/src/snd-hda-macbookpro-0.1
+
+pkgver() {
+  cd "$_tree"
+  printf 'r%s.%s' "$(git rev-list --count HEAD)" "$(git rev-parse --short=7 HEAD)"
+}
+
+check() {
+  # every kept set of kernel files dkmsPrepare can pick must be complete
+  cd "$_tree"
+  for s in packaging/dkms/kernel/*/; do
+    for f in codecs/cirrus/cs8409.c codecs/cirrus/cs8409.h codecs/cirrus/cs8409-tables.c codecs/generic.h \
+             codecs/side-codecs/hda_component.h common/hda_auto_parser.h common/hda_jack.h common/hda_local.h; do
+      [ -f "$s/sound/hda/$f" ] || { echo "missing $s/sound/hda/$f"; return 1; }
+    done
+    [ -f "$s/include/sound/hda_codec.h" ] || { echo "missing $s/include/sound/hda_codec.h"; return 1; }
+  done
+}
+
+package() {
+  cd "$_tree"
+  install -Dm644 -t "$pkgdir/$_dest" dkms.conf Makefile patch_cs8409.c.diff patch_cs8409.h.diff LICENSE
+  install -Dm755 -t "$pkgdir/$_dest/packaging/dkms" packaging/dkms/dkmsPrepare
+  install -Dm644 -t "$pkgdir/$_dest/makefiles" makefiles/*
+  install -Dm644 -t "$pkgdir/$_dest/patch_cirrus" patch_cirrus/*.h
+  find packaging/dkms/kernel -type f -exec install -Dm644 {} "$pkgdir/$_dest/{}" \;
+}
