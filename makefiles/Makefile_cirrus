@@ -1,6 +1,12 @@
 # SPDX-License-Identifier: GPL-2.0
 subdir-ccflags-y += -I$(src)/../../common
 
+# The jack table is a linked list since "ALSA: hda: Use linked list for jack
+# table" (7.3.6 and later) and an array before; the code needs to know which.
+ifneq ($(shell grep -s jacktbl_last $(srctree)/include/sound/hda_codec.h),)
+ccflags-y += -DHDA_JACK_LIST
+endif
+
 #snd-hda-codec-cs420x-y :=	cs420x.o
 #snd-hda-codec-cs421x-y :=	cs421x.o
 snd-hda-codec-cs8409-y :=	cs8409.o cs8409-tables.o

@@ -936,16 +936,30 @@ static int cs_8409_capture_pcm_prepare(struct hda_pcm_stream *hinfo,
 }
 
 
+// The jack table is a linked list since "ALSA: hda: Use linked list for jack
+// table" (5676e013f16a), in 7.3.6 and later, and an snd_array before. No macro
+// tells the two apart, so the Makefile looks at the kernel's
+// include/sound/hda_codec.h and defines HDA_JACK_LIST for the list.
+#ifdef HDA_JACK_LIST
+#define cs8409_jacktbl_used(codec) ((codec)->jacktbl_used)
+#define cs8409_for_each_jack(codec, jack, i) \
+        for (i = 0, jack = (codec)->jacktbl; jack; i++, jack = jack->next)
+#else
+#define cs8409_jacktbl_used(codec) ((codec)->jacktbl.used)
+#define cs8409_for_each_jack(codec, jack, i) \
+        for (i = 0, jack = (codec)->jacktbl.list; jack && i < (codec)->jacktbl.used; i++, jack++)
+#endif
+
 // another copied routine as this is local to hda_jack.c
 static struct hda_jack_tbl *
 cs8409_any_jack_tbl_get_from_nid(struct hda_codec *codec, hda_nid_t nid)
 {
-        struct hda_jack_tbl *jack = codec->jacktbl.list;
+        struct hda_jack_tbl *jack;
         int i;
 
-        if (!nid || !jack)
+        if (!nid)
                 return NULL;
-        for (i = 0; i < codec->jacktbl.used; i++, jack++)
+        cs8409_for_each_jack(codec, jack, i)
                 if (jack->nid == nid)
                         return jack;
         return NULL;
@@ -966,9 +980,22 @@ cs_8409_hda_jack_tbl_new(struct hda_codec *codec, hda_nid_t nid, int dev_id)
 
         if (jack)
                 return jack;
+#ifdef HDA_JACK_LIST
+        // freed by the kernel's snd_hda_jack_tbl_clear, as its own entries
+        jack = kzalloc(sizeof(*jack), GFP_KERNEL);
+        if (!jack)
+                return NULL;
+        if (!codec->jacktbl)
+                codec->jacktbl = jack;
+        else
+                codec->jacktbl_last->next = jack;
+        codec->jacktbl_last = jack;
+        codec->jacktbl_used++;
+#else
         jack = snd_array_new(&codec->jacktbl);
         if (!jack)
                 return NULL;
+#endif
         jack->nid = nid;
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
         jack->dev_id = dev_id;
@@ -984,7 +1011,7 @@ cs_8409_hda_jack_tbl_new(struct hda_codec *codec, hda_nid_t nid, int dev_id)
                  */
                 jack->jack_detect = existing_nid_jack->jack_detect;
         } else {
-                jack->tag = codec->jacktbl.used;
+                jack->tag = cs8409_jacktbl_used(codec);
         }
         //// use this to prevent AC_VERB_GET_PIN_SENSE (f09) verbs being sent - not seen in OSX logs
         // well it does but it also makes the jack seem permanently connected
@@ -1014,11 +1041,11 @@ cs_8409_find_callback_from_list(struct hda_jack_tbl *jack,
 // quick debug callback list function
 void cs_8409_dump_callback(struct hda_codec *codec)
 {
-        struct hda_jack_tbl *jack = codec->jacktbl.list;
+        struct hda_jack_tbl *jack;
         int i;
         struct hda_jack_callback *cb;
 
-        for (i = 0; i < codec->jacktbl.used; i++, jack++) {
+        cs8409_for_each_jack(codec, jack, i) {
                 for (cb = jack->callback; cb; cb = cb->next) {
 		        printk("snd_hda_intel: cs_8409_dump_callback jack num %d nid 0x%02x tag 0x%08x func %pF\n",i,jack->nid,jack->tag,cb->func);
                 }
@@ -3724,7 +3751,7 @@ static int cs8409_apple(struct hda_codec *codec)
 
         // the jack detect enable callback can be either in PRE_PROBE or PROBE phase
 
-        myprintk("snd_hda_intel: cs 8409 jack used %d\n",codec->jacktbl.used);
+        myprintk("snd_hda_intel: cs 8409 jack used %d\n",cs8409_jacktbl_used(codec));
 
         // we need to figure out how to setup the jack detect callback
         // not clear what nid should be used - 0x01 or 0x47
@@ -3732,7 +3759,7 @@ static int cs8409_apple(struct hda_codec *codec)
         // so far the tag seems to be 0x37
         //cs_8409_hda_jack_detect_enable_callback(codec, 0x01, 0, 0x37, cs_8409_cs42l83_callback);
 
-        //myprintk("snd_hda_intel: cs 8409 jack used callback %d\n",codec->jacktbl.used);
+        //myprintk("snd_hda_intel: cs 8409 jack used callback %d\n",cs8409_jacktbl_used(codec));
 
 
         //      cs8409_pinmux_init(codec);
@@ -3817,7 +3844,7 @@ static int cs8409_apple(struct hda_codec *codec)
 	snd_hda_codec_set_name(codec, "CS8409/CS42L83");
 
 
-	myprintk("snd_hda_intel: cs 8409 jack used post %d\n",codec->jacktbl.used);
+	myprintk("snd_hda_intel: cs 8409 jack used post %d\n",cs8409_jacktbl_used(codec));
 
 #ifdef MYSOUNDDEBUGFULL
 	cs_8409_dump_callback(codec);
